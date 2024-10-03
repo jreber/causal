@@ -12,15 +12,16 @@
   (->> conditions
        (keep (fn [[pred-msg pred]]
                (when-not (pred ds)
-                 pred-msg)))))
+                 pred-msg)))
+       doall))
 
 (defn collider-violations [ds {:keys [collider/child
                                       collider/parent1
                                       collider/parent2]}]
-  (let [conditions {"parents are independent"         #(independent? % parent1 parent2)
-                    "parent1 and child are dependent" #(dependent? % parent1 child)
-                    "parent2 and child are dependent" #(dependent? % parent2 child)
-                    "parents are dependent conditioned on child" #(dependent? % parent1 parent2 child)}]
+  (let [conditions {"parents should be independent"         #(independent? % parent1 parent2)
+                    "parent1 and child should be dependent" #(dependent? % child parent1)
+                    "parent2 and child should be dependent" #(dependent? % child parent2)
+                    "parents should be dependent conditioned on child" #(dependent? % parent1 parent2 child)}]
     (get-failed-conditions ds conditions)))
 
 (def collider? (comp empty? collider-violations))
@@ -29,10 +30,10 @@
 (defn fork-violations [ds {:keys [fork/parent
                                   fork/child1
                                   fork/child2]}]
-  (let [conditions {"children are dependent"          #(dependent? % child1 child2)
-                    "parent and child1 are dependent" #(dependent? % parent child1)
-                    "parent and child2 are dependent" #(dependent? % parent child2)
-                    "children are independent conditioned on parent" #(independent? % child1 child2 parent)}]
+  (let [conditions {"children should be dependent"          #(dependent? % child1 child2)
+                    "parent and child1 should be dependent" #(dependent? % child1 parent)
+                    "parent and child2 should be dependent" #(dependent? % child2 parent)
+                    "children should be independent conditioned on parent" #(independent? % child1 child2 parent)}]
     (get-failed-conditions ds conditions)))
 
 (def fork? (comp empty? fork-violations))
@@ -41,10 +42,10 @@
 (defn chain-violations [ds {:keys [chain/first
                                    chain/middle
                                    chain/last]}]
-  (let [conditions {"first and middle are dependent" #(dependent? % first middle)
-                    "middle and last are dependent"  #(dependent? % middle last)
-                    "first and last are dependent"   #(dependent? % first last)
-                    "first and last are independent conditioned on middle" #(independent? % first last middle)}]
+  (let [conditions {"first and middle should be dependent" #(dependent? % first middle)
+                    "middle and last should be dependent"  #(dependent? % middle last)
+                    "first and last should be dependent"   #(dependent? % first last)
+                    "first and last should be independent conditioned on middle" #(independent? % first last middle)}]
     (get-failed-conditions ds conditions)))
 
 (def chain? (comp empty? chain-violations))
