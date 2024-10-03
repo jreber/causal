@@ -5,8 +5,10 @@
             :url "https://www.eclipse.org/legal/epl-2.0/"}
   :dependencies [[org.clojure/clojure "1.12.0"]
                  [scicloj/scicloj.ml "0.3"]
+                 [techascent/tech.ml.dataset "7.032"]
                  [generateme/fastmath "2.4.0"]]
   :main ^:skip-aot causal.core
   :target-path "target/%s"
+  :jvm-opts ["-Xmx16g" "-XX:-OmitStackTraceInFastThrow"]
   :profiles {:uberjar {:aot :all
                        :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}})
