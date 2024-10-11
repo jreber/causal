@@ -1,4 +1,5 @@
 (ns causal.fcit
+  "Implementation of Fast Causal Independence Test."
   (:require [clojure.pprint :refer [pprint print-table]]
             [scicloj.ml.dataset :as ds]
             [tech.v3.datatype.functional :as dfn]
@@ -8,16 +9,19 @@
             [fastmath.stats :as stats]))
 
 
-(def ds-name ds/dataset-name)
-
 (defn create-pipeline [& cols]
+  "Creates a Scicloj pipeline that limits the dataset to the target
+  columns, sets the inference target to be the first of the columns,
+  and sets the ML model to be a gradient tree boost."
   (ml/pipeline
    (mm/select-columns cols)
    (mm/set-inference-target (first cols))
    (mm/model {:model-type :smile.regression/gradient-tree-boost
-              :trees 50})))
+              :trees 100})))
 
 (defn compute-mse [pipe-fn train-ds test-ds]
+  "Given a pipeline fn and a train/test data split, trains the model
+  and then tests it and computes an MSE score."
   (let [trained-ctx (pipe-fn {:metamorph/data train-ds
                               :metamorph/mode :fit})
         test-ctx (pipe-fn
@@ -32,11 +36,16 @@
             (ds/->array test-ds target))))
 
 (defn- compute-mses [ds [cols1 pipe-fn1] [cols2 pipe-fn2]]
+  "Given two ML models (pipe-fn1 and pipe-fn2), trains them using the
+  data in ds and then computes an MSE for each. Returns a map {cols*
+  -> mse*}."
   (let [{:keys [train-ds test-ds]} (ds/train-test-split ds)]
     {cols1 (compute-mse pipe-fn1 train-ds test-ds)
      cols2 (compute-mse pipe-fn2 train-ds test-ds)}))
 
 (defn- t-test [cols1 cols2 ms]
+  "Performs a T-test on the given data. ms is a sequence of maps, each
+  map having keys [cols1 cols2]."
   (println "Performing t-test on values:")
   (print-table ms)
   (stats/t-test-two-samples
@@ -45,9 +54,15 @@
    {:sides #_:both :one-sided-greater}))
 
 (defn equally-good-predictors? [ds target-and-predictors1 target-and-predictors2]
+  "Given two sets of columns (`target-and-predictors1` and
+  `target-and-predictors2`), creates ML models and then trains them
+  repeatedly to determine which set of predictors is better.
+
+  Returns the p-value from a T-test; the lower the p-value, the more
+  likely that one of the predictors is better than the other."
   (let [cleaned-ds (ds/drop-missing ds (dedupe
                                         (concat target-and-predictors1 target-and-predictors2)))
-        num-trials 20
+        num-trials 10
         pipe-fn1 (apply create-pipeline target-and-predictors1)
         pipe-fn2 (apply create-pipeline target-and-predictors2)]
     (->> (range num-trials)
@@ -58,6 +73,8 @@
          :p-value)))
 
 (defn dependent?
+  "Returns true if `target` and `predictor` are independent (optionally
+  conditioned on `other`); false otherwise."
   ([ds target predictor]
    (-> ds
        (ds/add-column :ignore 0 :cycle)
@@ -69,4 +86,16 @@
      (<= p-value 0.05))))
 
 (def independent?
+  "Returns true if `target` and `predictor` are probably independent (optionally conditioned on `other`); false other wise."
   (complement dependent?))
+
+(defn mse-samples [ds target-and-predictors num-samples]
+  "Computes `num-samples` MSEs for the ML model built using
+  `target-and-predictors`."
+  (let [cleaned-ds (ds/drop-missing ds (dedupe target-and-predictors))
+        pipe-fn (apply create-pipeline target-and-predictors)]
+    (->> (range num-samples)
+         (pmap (fn [_]
+                 (let [{:keys [train-ds test-ds]} (ds/train-test-split cleaned-ds)]
+                   (compute-mse pipe-fn train-ds test-ds))))
+         (take num-samples))))
