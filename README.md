@@ -1,5 +1,5 @@
 # causal
-My explorations implementing causal modeling. To goal is pedagogy,
+My explorations implementing causal modeling. The goal is pedagogy,
 like the motivation behind "Structure and Interpretation of Computer
 Programs" and "Structure and Interpretation of Classical Mechanics."
 
