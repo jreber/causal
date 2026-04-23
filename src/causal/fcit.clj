@@ -1,12 +1,12 @@
 (ns causal.fcit
   "Implementation of the Fast Conditional Independence Test (FCIT).
 
-  Tests X ⊥ Y | Z by comparing two gradient-boosted models on the same
-  train/test split:
+  Tests X ⊥ Y | Z (or X ⊥ Y | Z1, Z2, …) by comparing two gradient-boosted
+  models on the same train/test split:
 
-    D1  — trained on (X, Z): the real model.
-    D0  — trained on (shuffled-X, Z) [marginal] or (Z only) [conditional]:
-          the null model, where X carries no information about Y beyond Z.
+    D1  — trained on (X, Z…): the real model.
+    D0  — trained on (shuffled-X, Z…) [marginal] or (Z… only) [conditional]:
+          the null model, where X carries no information about Y beyond Z….
 
   For each random split we record the ratio D0/D1.  When X is informative
   the ratio is systematically > 1.  A one-sample t-test (H1: mean > 1) on
@@ -60,14 +60,16 @@
 
 (defn dependent?
   "Returns true if `target` and `predictor` are dependent (optionally
-  conditioned on `other`); false otherwise.
+  conditioned on one or more `others`); false otherwise.
 
-  Marginal case (no `other`): constructs the null by shuffling the predictor
+  Marginal case (no `others`): constructs the null by shuffling the predictor
   column on each trial, breaking its relationship with the target.
 
-  Conditional case (`other` given): the null model predicts `target` from
-  `other` alone; the real model adds `predictor`.  Both use the same
+  Conditional case (`others` given): the null model predicts `target` from
+  `others` alone; the real model adds `predictor`.  Both use the same
   train/test split per trial so that per-split noise cancels in the ratio.
+  Accepts any number of conditioning variables, enabling d-separation tests
+  that require blocking multiple paths simultaneously.
 
   Uses 10 trials and α = 0.05."
   ([ds target predictor]
@@ -85,10 +87,11 @@
                                      (compute-mse real-pipe train test)))))
                         doall)]
      (<= (ratio-p-value ratios) 0.05)))
-  ([ds target predictor other]
-   (let [cleaned   (ds/drop-missing ds [target predictor other])
-         real-pipe (create-pipeline target predictor other)
-         null-pipe (create-pipeline target other)
+  ([ds target predictor & others]
+   (let [cols      (into [target predictor] others)
+         cleaned   (ds/drop-missing ds cols)
+         real-pipe (apply create-pipeline cols)
+         null-pipe (apply create-pipeline (into [target] others))
          n-trials  10
          ratios    (->> (range n-trials)
                         (pmap (fn [_] (ratio-sample cleaned null-pipe real-pipe)))
@@ -97,16 +100,20 @@
 
 (def independent?
   "Returns true if `target` and `predictor` are independent (optionally
-  conditioned on `other`); false otherwise."
+  conditioned on one or more `others`); false otherwise."
   (complement dependent?))
 
 (defn mse-samples
-  "Returns `num-samples` D0/D1 ratio samples for the given model, useful
-  for debugging the signal strength before running a full test."
-  [ds target predictor other num-samples]
-  (let [cleaned   (ds/drop-missing ds [target predictor other])
-        real-pipe (create-pipeline target predictor other)
-        null-pipe (create-pipeline target other)]
+  "Returns `num-samples` D0/D1 ratio samples for the conditional model
+  (target ~ predictor + others vs. target ~ others), useful for debugging
+  signal strength before running a full test.
+
+  `others` is a seq of one or more conditioning column names."
+  [ds target predictor num-samples & others]
+  (let [cols      (into [target predictor] others)
+        cleaned   (ds/drop-missing ds cols)
+        real-pipe (apply create-pipeline cols)
+        null-pipe (apply create-pipeline (into [target] others))]
     (->> (range num-samples)
          (pmap (fn [_] (ratio-sample cleaned null-pipe real-pipe)))
          doall)))

@@ -15,33 +15,84 @@
 
 (defn collider-violations [ds {:keys [collider/child
                                       collider/parent1
-                                      collider/parent2]}]
-  (let [conditions {"parents should be independent"         #(independent? % parent1 parent2)
-                    "parent1 and child should be dependent" #(dependent? % child parent1)
-                    "parent2 and child should be dependent" #(dependent? % child parent2)
-                    "parents should be dependent conditioned on child" #(dependent? % parent1 parent2 child)}]
+                                      collider/parent2
+                                      collider/decouplers]}]
+  "Tests the collider structure parent1 → child ← parent2.
+
+  Standard case (no :collider/decouplers): parents must be marginally
+  independent, and become dependent when conditioning on the child.
+
+  Generalised case (:collider/decouplers given): a d-separating set S that
+  renders the parents conditionally independent.  The test then checks:
+    parent1 ⊥ parent2 | S            (decouplers block all other paths)
+    parent1 ⊥̸ parent2 | S ∪ {child}  (child opens the collider path)
+  This is Pearl's d-separation applied to a conditioning set S ≠ ∅,
+  equivalent to the standard test when S = ∅."
+  (let [decouplers-vec (vec (or decouplers []))
+        conditions
+        {"parent1 and child should be dependent"
+         #(dependent? % child parent1)
+         "parent2 and child should be dependent"
+         #(dependent? % child parent2)
+         "parents should be independent given decouplers"
+         #(apply independent? % parent1 parent2 decouplers-vec)
+         "parents should be dependent given decouplers and child"
+         #(apply dependent? % parent1 parent2 (conj decouplers-vec child))}]
     (get-failed-conditions ds conditions)))
 
 (def collider? (comp empty? collider-violations))
 
-(defn fork-violations [ds {:keys [fork/parent
-                                  fork/child1
-                                  fork/child2]}]
-  (let [conditions {"children should be dependent"          #(dependent? % child1 child2)
-                    "parent and child1 should be dependent" #(dependent? % child1 parent)
-                    "parent and child2 should be dependent" #(dependent? % child2 parent)
-                    "children should be independent conditioned on parent" #(independent? % child1 child2 parent)}]
+(defn fork-violations [ds {:keys [fork/parent fork/parents fork/child1 fork/child2]}]
+  "Tests the fork structure child1 ← parent(s) → child2.
+
+  Accepts either :fork/parent (single keyword, backward-compatible) or
+  :fork/parents (keyword or vector of keywords).  With multiple parents the
+  test reflects two distinct overlapping forks sharing the same children;
+  the key d-separation claim is child1 ⊥ child2 | {all parents}."
+  (let [parents-vec (cond
+                      (some? parents) (if (sequential? parents) (vec parents) [parents])
+                      (some? parent)  [parent]
+                      :else (throw (ex-info "fork spec requires :fork/parent or :fork/parents" {})))
+        parent-dep-conditions
+        (into {} (for [p      parents-vec
+                       [lbl c] [["child1" child1] ["child2" child2]]]
+                   [(str p " and " lbl " should be dependent")
+                    (fn [d] (dependent? d c p))]))
+        conditions
+        (merge {"children should be dependent"
+                #(dependent? % child1 child2)
+                "children should be independent conditioned on all parents"
+                #(apply independent? % child1 child2 parents-vec)}
+               parent-dep-conditions)]
     (get-failed-conditions ds conditions)))
 
 (def fork? (comp empty? fork-violations))
 
 (defn chain-violations [ds {:keys [chain/first
                                    chain/middle
-                                   chain/last]}]
-  (let [conditions {"first and middle should be dependent" #(dependent? % first middle)
-                    "middle and last should be dependent"  #(dependent? % middle last)
-                    "first and last should be dependent"   #(dependent? % first last)
-                    "first and last should be independent conditioned on middle" #(independent? % first last middle)}]
+                                   chain/last
+                                   chain/confounders]}]
+  "Tests the chain structure first → middle → last.
+
+  Accepts an optional :chain/confounders (keyword or vector of keywords) for
+  variables that create additional active paths between first and last.
+  The key d-separation claim becomes first ⊥ last | {middle, confounders},
+  blocking all paths — not just the direct chain — between the endpoints."
+  (let [confounders-vec (vec (or (when confounders
+                                   (if (sequential? confounders)
+                                     confounders
+                                     [confounders]))
+                                 []))
+        blocking-set (into [middle] confounders-vec)
+        conditions
+        {"first and middle should be dependent"
+         #(dependent? % first middle)
+         "middle and last should be dependent"
+         #(dependent? % middle last)
+         "first and last should be dependent"
+         #(dependent? % first last)
+         "first and last should be independent conditioned on middle (and confounders)"
+         #(apply independent? % first last blocking-set)}]
     (get-failed-conditions ds conditions)))
 
 (def chain? (comp empty? chain-violations))

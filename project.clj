@@ -12,5 +12,8 @@
   :main ^:skip-aot causal.core
   :target-path "target/%s"
   :jvm-opts ["-Xmx16g" "-XX:-OmitStackTraceInFastThrow"]
+  :test-selectors {:default (complement :sachs)
+                   :sachs   :sachs
+                   :all     (constantly true)}
   :profiles {:uberjar {:aot :all
                        :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}})
