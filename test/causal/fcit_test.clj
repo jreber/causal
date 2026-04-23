@@ -6,7 +6,7 @@
   trials for robustness."
   (:require [clojure.test :refer :all]
             [scicloj.ml.dataset :as ds]
-            [causal.fcit :refer [dependent? independent?]]))
+            [causal.fcit :refer [dependent? independent? mse-samples]]))
 
 ;; ---------------------------------------------------------------------------
 ;; Test data generators
@@ -44,6 +44,25 @@
         z (map + x y)]
     (ds/dataset {:x x :y y :z z})))
 
+(defn- two-parent-fork-data
+  "W and Z each independently cause both X and Y (two overlapping forks).
+  X and Y are marginally dependent but conditionally independent given {W, Z}."
+  [n]
+  (let [w (repeatedly n rand)
+        z (repeatedly n rand)
+        x (map + w z (map #(* 0.5 %) (repeatedly n rand)))
+        y (map + w z (map #(* 0.5 %) (repeatedly n rand)))]
+    (ds/dataset {:x x :y y :w w :z z})))
+
+(defn- conditionally-dependent-data
+  "Z is independent. X = Z + noise. Y = X + Z + noise.
+  Given Z, X is still informative about Y (direct path X -> Y remains)."
+  [n]
+  (let [z (repeatedly n rand)
+        x (map + z (repeatedly n rand))
+        y (map + x z (repeatedly n rand))]
+    (ds/dataset {:x x :y y :z z})))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests: marginal dependence / independence
 ;; ---------------------------------------------------------------------------
@@ -61,7 +80,7 @@
           "x and y are unrelated draws"))))
 
 ;; ---------------------------------------------------------------------------
-;; Tests: conditional independence / dependence
+;; Tests: conditional independence / dependence (single conditioning var)
 ;; ---------------------------------------------------------------------------
 
 (deftest independent?-conditional-fork
@@ -87,3 +106,45 @@
     (let [df (collider-data 1000)]
       (is (independent? df :x :y)
           "x and y are independent draws in the collider"))))
+
+;; ---------------------------------------------------------------------------
+;; Tests: multi-variable conditioning (2+ conditioning vars)
+;; ---------------------------------------------------------------------------
+
+(deftest independent?-two-variable-conditioning
+  (testing "X ⊥ Y | {W, Z} when W and Z are the only common causes of X and Y"
+    (let [df (two-parent-fork-data 1000)]
+      (is (independent? df :x :y :w :z)
+          "conditioning on both parents blocks all paths between X and Y"))))
+
+(deftest dependent?-remains-dependent-with-partial-conditioning
+  (testing "X and Y remain dependent given only one of two common causes"
+    (let [df (two-parent-fork-data 1000)]
+      (is (dependent? df :x :y :w)
+          "conditioning on W alone leaves the Z path open"))))
+
+;; ---------------------------------------------------------------------------
+;; Tests: mse-samples
+;; ---------------------------------------------------------------------------
+
+(deftest mse-samples-returns-requested-count
+  (testing "mse-samples returns exactly n ratio samples, all positive numbers"
+    (let [df      (conditionally-dependent-data 500)
+          samples (mse-samples df :y :x 5 :z)]
+      (is (= 5 (count samples)))
+      (is (every? pos? samples)))))
+
+(deftest mse-samples-ratios-above-1-when-predictor-informative
+  (testing "mean D0/D1 ratio > 1 when predictor genuinely explains target beyond conditioning set"
+    (let [df      (conditionally-dependent-data 1000)
+          samples (mse-samples df :y :x 20 :z)]
+      (is (> (/ (reduce + samples) (count samples)) 1.0)
+          "Y = X + Z + noise: X improves prediction of Y beyond Z alone"))))
+
+(deftest mse-samples-ratios-near-1-when-predictor-uninformative
+  (testing "mean D0/D1 ratio ≈ 1 when predictor adds nothing beyond conditioning set"
+    (let [df      (fork-data 1000)
+          ;; Given Z, X carries no information about Y (fork structure)
+          samples (mse-samples df :x :y 20 :z)]
+      (is (< (/ (reduce + samples) (count samples)) 1.5)
+          "null and real model should perform similarly when X ⊥ Y | Z"))))
