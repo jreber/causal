@@ -1,8 +1,6 @@
 (ns causal.causal
   (:require [causal.fcit :refer [dependent? independent?]]
-            [scicloj.ml.dataset :as ds]
-            [clojure.pprint :refer [pprint print-table]]))
-
+            [scicloj.ml.dataset :as ds]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; testing for various causal model shapes
@@ -26,7 +24,6 @@
 
 (def collider? (comp empty? collider-violations))
 
-
 (defn fork-violations [ds {:keys [fork/parent
                                   fork/child1
                                   fork/child2]}]
@@ -38,7 +35,6 @@
 
 (def fork? (comp empty? fork-violations))
 
-
 (defn chain-violations [ds {:keys [chain/first
                                    chain/middle
                                    chain/last]}]
@@ -49,7 +45,6 @@
     (get-failed-conditions ds conditions)))
 
 (def chain? (comp empty? chain-violations))
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; creating various causal model shapes
@@ -82,7 +77,7 @@
       {:x X
        :y Y
        :z Z}
-      {:dataset-name "chain X->Y->X"}))))
+      {:dataset-name "chain X->Y->Z"}))))
 
 (defn make-collider-df
   ([]
@@ -97,20 +92,3 @@
        :z Z}
       {:dataset-name "collider X->Z<-Y"}))))
 
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; tests (todo move to real test file)
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(let [collider-df (make-collider-df)
-      chain-df (make-chain-df)
-      fork-df (make-fork-df)]
-  (assert (collider? collider-df {:collider/parent1 :x
-                                  :collider/parent2 :y
-                                  :collider/child :z}))
-  (assert (chain? chain-df {:chain/first :x
-                            :chain/middle :y
-                            :chain/last :z}))
-  (assert (fork? fork-df {:fork/child1 :x
-                          :fork/child2 :y
-                          :fork/parent :z})))

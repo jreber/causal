@@ -1,101 +1,112 @@
 (ns causal.fcit
-  "Implementation of Fast Causal Independence Test."
-  (:require [clojure.pprint :refer [pprint print-table]]
-            [scicloj.ml.dataset :as ds]
-            [tech.v3.datatype.functional :as dfn]
+  "Implementation of the Fast Conditional Independence Test (FCIT).
+
+  Tests X ⊥ Y | Z by comparing two gradient-boosted models on the same
+  train/test split:
+
+    D1  — trained on (X, Z): the real model.
+    D0  — trained on (shuffled-X, Z) [marginal] or (Z only) [conditional]:
+          the null model, where X carries no information about Y beyond Z.
+
+  For each random split we record the ratio D0/D1.  When X is informative
+  the ratio is systematically > 1.  A one-sample t-test (H1: mean > 1) on
+  the ratio samples yields the p-value.  This matches Chalupka et al. (2018)."
+  (:require [scicloj.ml.dataset :as ds]
             [scicloj.ml.core :as ml]
             [scicloj.ml.metamorph :as mm]
-            [scicloj.ml.metamorph :as prep]
             [fastmath.stats :as stats]))
 
+;; ---------------------------------------------------------------------------
+;; Internal helpers
+;; ---------------------------------------------------------------------------
 
-(defn create-pipeline [& cols]
-  "Creates a Scicloj pipeline that limits the dataset to the target
-  columns, sets the inference target to be the first of the columns,
-  and sets the ML model to be a gradient tree boost."
+(defn- create-pipeline
+  "Gradient-boosted regression pipeline predicting (first cols) from the rest."
+  [& cols]
   (ml/pipeline
    (mm/select-columns cols)
    (mm/set-inference-target (first cols))
    (mm/model {:model-type :smile.regression/gradient-tree-boost
               :trees 100})))
 
-(defn compute-mse [pipe-fn train-ds test-ds]
-  "Given a pipeline fn and a train/test data split, trains the model
-  and then tests it and computes an MSE score."
+(defn- compute-mse
+  "Fits pipe-fn on train-ds, evaluates on test-ds, returns MSE."
+  [pipe-fn train-ds test-ds]
   (let [trained-ctx (pipe-fn {:metamorph/data train-ds
                               :metamorph/mode :fit})
-        test-ctx (pipe-fn
-                  (assoc trained-ctx
-                         :metamorph/data test-ds
-                         :metamorph/mode :transform))
-        target (-> test-ctx
-                   :metamorph/data
-                   ds/column-names
-                   first)]
+        test-ctx    (pipe-fn (assoc trained-ctx
+                                    :metamorph/data test-ds
+                                    :metamorph/mode :transform))
+        target      (-> test-ctx :metamorph/data ds/column-names first)]
     (ml/mse (ds/->array (:metamorph/data test-ctx) target)
             (ds/->array test-ds target))))
 
-(defn- compute-mses [ds [cols1 pipe-fn1] [cols2 pipe-fn2]]
-  "Given two ML models (pipe-fn1 and pipe-fn2), trains them using the
-  data in ds and then computes an MSE for each. Returns a map {cols*
-  -> mse*}."
-  (let [{:keys [train-ds test-ds]} (ds/train-test-split ds)]
-    {cols1 (compute-mse pipe-fn1 train-ds test-ds)
-     cols2 (compute-mse pipe-fn2 train-ds test-ds)}))
+(defn- ratio-sample
+  "Returns D0/D1 on one shared random train/test split."
+  [ds null-pipe real-pipe]
+  (let [{:keys [train-ds test-ds]} (ds/train-test-split ds)
+        d1 (compute-mse real-pipe train-ds test-ds)
+        d0 (compute-mse null-pipe train-ds test-ds)]
+    (/ d0 d1)))
 
-(defn- t-test [cols1 cols2 ms]
-  "Performs a T-test on the given data. ms is a sequence of maps, each
-  map having keys [cols1 cols2]."
-  (println "Performing t-test on values:")
-  (print-table ms)
-  (stats/t-test-two-samples
-   (map #(get % cols1) ms)
-   (map #(get % cols2) ms)
-   {:sides #_:both :one-sided-greater}))
+(defn- ratio-p-value
+  "One-sample t-test on ratio samples: H1 = mean(ratios) > 1."
+  [ratios]
+  (:p-value (stats/t-test-one-sample ratios {:mu 1.0 :sides :one-sided-greater})))
 
-(defn equally-good-predictors? [ds target-and-predictors1 target-and-predictors2]
-  "Given two sets of columns (`target-and-predictors1` and
-  `target-and-predictors2`), creates ML models and then trains them
-  repeatedly to determine which set of predictors is better.
-
-  Returns the p-value from a T-test; the lower the p-value, the more
-  likely that one of the predictors is better than the other."
-  (let [cleaned-ds (ds/drop-missing ds (dedupe
-                                        (concat target-and-predictors1 target-and-predictors2)))
-        num-trials 10
-        pipe-fn1 (apply create-pipeline target-and-predictors1)
-        pipe-fn2 (apply create-pipeline target-and-predictors2)]
-    (->> (range num-trials)
-         (pmap (fn [_] (compute-mses cleaned-ds
-                                     [target-and-predictors1 pipe-fn1]
-                                     [target-and-predictors2 pipe-fn2])))
-         (t-test target-and-predictors1 target-and-predictors2)
-         :p-value)))
+;; ---------------------------------------------------------------------------
+;; Public API
+;; ---------------------------------------------------------------------------
 
 (defn dependent?
-  "Returns true if `target` and `predictor` are independent (optionally
-  conditioned on `other`); false otherwise."
+  "Returns true if `target` and `predictor` are dependent (optionally
+  conditioned on `other`); false otherwise.
+
+  Marginal case (no `other`): constructs the null by shuffling the predictor
+  column on each trial, breaking its relationship with the target.
+
+  Conditional case (`other` given): the null model predicts `target` from
+  `other` alone; the real model adds `predictor`.  Both use the same
+  train/test split per trial so that per-split noise cancels in the ratio.
+
+  Uses 10 trials and α = 0.05."
   ([ds target predictor]
-   (-> ds
-       (ds/add-column :ignore 0 :cycle)
-       (dependent? target predictor :ignore)))
+   (let [cleaned   (ds/drop-missing ds [target predictor])
+         null-col  :__fcit_null__
+         real-pipe (create-pipeline target predictor)
+         null-pipe (create-pipeline target null-col)
+         n-trials  10
+         ratios    (->> (range n-trials)
+                        (pmap (fn [_]
+                                (let [shuffled  (shuffle (vec (ds/->array cleaned predictor)))
+                                      trial-ds  (ds/add-column cleaned null-col shuffled)
+                                      {train :train-ds test :test-ds} (ds/train-test-split trial-ds)]
+                                  (/ (compute-mse null-pipe train test)
+                                     (compute-mse real-pipe train test)))))
+                        doall)]
+     (<= (ratio-p-value ratios) 0.05)))
   ([ds target predictor other]
-   (let [p-value (equally-good-predictors? ds
-                                           [target other]
-                                           [target predictor other])]
-     (<= p-value 0.05))))
+   (let [cleaned   (ds/drop-missing ds [target predictor other])
+         real-pipe (create-pipeline target predictor other)
+         null-pipe (create-pipeline target other)
+         n-trials  10
+         ratios    (->> (range n-trials)
+                        (pmap (fn [_] (ratio-sample cleaned null-pipe real-pipe)))
+                        doall)]
+     (<= (ratio-p-value ratios) 0.05))))
 
 (def independent?
-  "Returns true if `target` and `predictor` are probably independent (optionally conditioned on `other`); false other wise."
+  "Returns true if `target` and `predictor` are independent (optionally
+  conditioned on `other`); false otherwise."
   (complement dependent?))
 
-(defn mse-samples [ds target-and-predictors num-samples]
-  "Computes `num-samples` MSEs for the ML model built using
-  `target-and-predictors`."
-  (let [cleaned-ds (ds/drop-missing ds (dedupe target-and-predictors))
-        pipe-fn (apply create-pipeline target-and-predictors)]
+(defn mse-samples
+  "Returns `num-samples` D0/D1 ratio samples for the given model, useful
+  for debugging the signal strength before running a full test."
+  [ds target predictor other num-samples]
+  (let [cleaned   (ds/drop-missing ds [target predictor other])
+        real-pipe (create-pipeline target predictor other)
+        null-pipe (create-pipeline target other)]
     (->> (range num-samples)
-         (pmap (fn [_]
-                 (let [{:keys [train-ds test-ds]} (ds/train-test-split cleaned-ds)]
-                   (compute-mse pipe-fn train-ds test-ds))))
-         (take num-samples))))
+         (pmap (fn [_] (ratio-sample cleaned null-pipe real-pipe)))
+         doall)))
