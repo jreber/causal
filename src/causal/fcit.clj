@@ -47,7 +47,11 @@
   (let [{:keys [train-ds test-ds]} (ds/train-test-split ds)
         d1 (compute-mse real-pipe train-ds test-ds)
         d0 (compute-mse null-pipe train-ds test-ds)]
-    (/ d0 d1)))
+    (let [ratio (/ d0 d1)]
+      (cond
+        (Double/isNaN ratio)      1.0
+        (Double/isInfinite ratio) 1e6
+        :else                     ratio))))
 
 (defn- ratio-p-value
   "One-sample t-test on ratio samples: H1 = mean(ratios) > 1."
