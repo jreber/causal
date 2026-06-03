@@ -13,3 +13,4 @@ pom.xml.asc
 .hg/
 *~
 *do_not_commit*
+.claude/
